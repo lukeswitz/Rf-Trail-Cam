@@ -124,4 +124,8 @@
             <a href="{{ url_for('index', page=networks.prev_num) }}">Previous</a>
         {% endif %}
         {% if networks.has_next %}
-            <a href="{{
+            <a href="{{ url_for('index', page=networks.next_num) }}">Next</a>
+        {% endif %}
+    </div>
+</body>
+</html>
