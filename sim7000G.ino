@@ -12,7 +12,8 @@
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 
-#define DHTPIN 33       // GPIO pin for DHT22 data
+// DHT22 GPIO
+#define DHTPIN 33       
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
 
