@@ -43,6 +43,9 @@ class Heartbeat(db.Model):
     mac = db.Column(db.String(17), nullable=False)
     timestamp = db.Column(db.DateTime, nullable=False)
     battery = db.Column(db.Float, nullable=False)
+    temperature = db.Column(db.Float, nullable=True)  # Add temperature field
+    humidity = db.Column(db.Float, nullable=True)     # Add humidity field
+
 
 def login_required(f):
     @wraps(f)
@@ -104,11 +107,18 @@ def receive_heartbeat():
     new_heartbeat = Heartbeat(
         mac=data.get('mac'),
         timestamp=timestamp,
-        battery=data.get('battery')
+        battery=data.get('battery'),
+        temperature=data.get('temperature'),
+        humidity=data.get('humidity')
     )
     db.session.add(new_heartbeat)
     db.session.commit()
-    return jsonify({"status": "success", "timestamp": timestamp.isoformat()}), 201
+    return jsonify({
+        "status": "success",
+        "timestamp": timestamp.isoformat(),
+        "temperature": new_heartbeat.temperature,
+        "humidity": new_heartbeat.humidity
+    }), 201
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():

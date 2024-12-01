@@ -9,6 +9,13 @@
 #include <queue>
 #include <algorithm>
 #include <esp_timer.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+
+// DHT22 GPIO
+#define DHTPIN 33       
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
 
 // LilyGO T-SIM7000G Pinout
 #define UART_BAUD   115200
@@ -62,7 +69,10 @@ void setup() {
   digitalWrite(PWR_PIN, HIGH);
   delay(300);
   digitalWrite(PWR_PIN, LOW);
-
+  delay(1000);
+  
+  // Initialize DHT sensor
+  dht.begin();
   delay(1000);
 
   SerialAT.begin(UART_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
@@ -249,30 +259,52 @@ float getBatteryVoltage() {
   return battery_voltage;
 }
 
+void readDHT22(float &temperature, float &humidity) {
+    temperature = dht.readTemperature();
+    humidity = dht.readHumidity();
+
+    if (isnan(temperature) || isnan(humidity)) {
+        SerialMon.println("Failed to read from DHT22 sensor!");
+        temperature = -1;
+        humidity = -1;
+    } else {
+        SerialMon.printf("Temperature: %.2f °C, Humidity: %.2f %%\n", temperature, humidity);
+    }
+}
+
 void sendHeartbeat() {
-  SerialMon.println("Sending heartbeat...");
-  
-  DynamicJsonDocument doc(256);
-  doc["type"] = "heartbeat";
-  doc["mac"] = WiFi.macAddress();
-  doc["battery"] = getBatteryVoltage();
+    SerialMon.println("Sending heartbeat...");
 
-  String payload;
-  serializeJson(doc, payload);
+    // Read DHT22 data
+    float temperature = 0.0;
+    float humidity = 0.0;
+    readDHT22(temperature, humidity);
 
-  http.beginRequest();
-  http.post("/api/heartbeat");
-  http.sendHeader("Content-Type", "application/json");
-  http.sendHeader("Content-Length", payload.length());
-  http.beginBody();
-  http.print(payload);
-  http.endRequest();
+    // Prepare JSON payload
+    DynamicJsonDocument doc(256);
+    doc["type"] = "heartbeat";
+    doc["mac"] = WiFi.macAddress();
+    doc["battery"] = getBatteryVoltage();
+    doc["temperature"] = temperature; // Add temperature to payload
+    doc["humidity"] = humidity;       // Add humidity to payload
 
-  int statusCode = http.responseStatusCode();
-  String response = http.responseBody();
+    String payload;
+    serializeJson(doc, payload);
 
-  SerialMon.print("Heartbeat status code: ");
-  SerialMon.println(statusCode);
-  SerialMon.print("Heartbeat response: ");
-  SerialMon.println(response);
+    // Send HTTP POST request
+    http.beginRequest();
+    http.post("/api/heartbeat");
+    http.sendHeader("Content-Type", "application/json");
+    http.sendHeader("Content-Length", payload.length());
+    http.beginBody();
+    http.print(payload);
+    http.endRequest();
+
+    int statusCode = http.responseStatusCode();
+    String response = http.responseBody();
+
+    SerialMon.print("Heartbeat status code: ");
+    SerialMon.println(statusCode);
+    SerialMon.print("Heartbeat response: ");
+    SerialMon.println(response);
 }
