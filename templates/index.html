@@ -49,17 +49,28 @@
 <body>
     <h1>Uploaded Networks</h1>
     
-    {% if session.get('logged_in') %}
-        <form action="{{ url_for('clear_database') }}" method="post" onsubmit="return confirm('Are you sure you want to clear the entire database? This action cannot be undone.');">
-            <button type="submit">Clear Database</button>
-        </form>
-        <form id="upload-form" action="{{ url_for('upload_to_wigle') }}" method="post">
-            <button type="submit">Upload to WiGLE</button>
-        </form>
-        <a href="{{ url_for('logout') }}">Logout</a>
-    {% else %}
-        <a href="{{ url_for('login') }}">Login</a>
+    {% if not session.get('logged_in') %}
+    <h2>Login</h2>
+    {% if session.get('login_error') %}
+        <p style="color: red;">{{ session.get('login_error') }}</p>
+        {% set session['login_error'] = None %} <!-- Clear the error message after displaying -->
     {% endif %}
+    <form action="{{ url_for('login') }}" method="post">
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required>
+        <br>
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required>
+        <br>
+        <button type="submit">Login</button>
+    </form>
+{% else %}
+    <h2>Admin Dashboard</h2>
+    <form action="{{ url_for('clear_database') }}" method="post" onsubmit="return confirm('Are you sure you want to clear the entire database? This action cannot be undone.');">
+        <button type="submit">Clear Database</button>
+    </form>
+    <a href="{{ url_for('logout') }}">Logout</a>
+{% endif %}
 
     <div id="message" style="display: none;"></div>
     
