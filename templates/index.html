@@ -48,32 +48,32 @@
 </head>
 <body>
     <h1>Uploaded Networks</h1>
-    
+
     {% if not session.get('logged_in') %}
-    <h2>Login</h2>
-    {% if session.get('login_error') %}
-        <p style="color: red;">{{ session.get('login_error') }}</p>
-        {% set session['login_error'] = None %} <!-- Clear the error message after displaying -->
+        <h2>Login</h2>
+        {% if session.get('login_error') %}
+            <p style="color: red;">{{ session.get('login_error') }}</p>
+            {% set session['login_error'] = None %} <!-- Clear the error message after displaying -->
+        {% endif %}
+        <form action="{{ url_for('login') }}" method="post">
+            <label for="username">Username:</label>
+            <input type="text" id="username" name="username" required>
+            <br>
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+            <br>
+            <button type="submit">Login</button>
+        </form>
+    {% else %}
+        <h2>Admin Dashboard</h2>
+        <form action="{{ url_for('clear_database') }}" method="post" onsubmit="return confirm('Are you sure you want to clear the entire database? This action cannot be undone.');">
+            <button type="submit">Clear Database</button>
+        </form>
+        <a href="{{ url_for('logout') }}">Logout</a>
     {% endif %}
-    <form action="{{ url_for('login') }}" method="post">
-        <label for="username">Username:</label>
-        <input type="text" id="username" name="username" required>
-        <br>
-        <label for="password">Password:</label>
-        <input type="password" id="password" name="password" required>
-        <br>
-        <button type="submit">Login</button>
-    </form>
-{% else %}
-    <h2>Admin Dashboard</h2>
-    <form action="{{ url_for('clear_database') }}" method="post" onsubmit="return confirm('Are you sure you want to clear the entire database? This action cannot be undone.');">
-        <button type="submit">Clear Database</button>
-    </form>
-    <a href="{{ url_for('logout') }}">Logout</a>
-{% endif %}
 
     <div id="message" style="display: none;"></div>
-    
+
     <h2>Device Heartbeats</h2>
     <table>
         <thead>
@@ -81,19 +81,23 @@
                 <th>MAC Address</th>
                 <th>Last Heartbeat</th>
                 <th>Battery Voltage</th>
+                <th>Temperature (°C)</th>
+                <th>Humidity (%)</th>
             </tr>
         </thead>
         <tbody>
             {% for heartbeat in heartbeats %}
-            <tr>
-                <td>{{ heartbeat.mac }}</td>
-                <td class="utc-time">{{ heartbeat.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC') }}</td>
-                <td>{{ heartbeat.battery }} V</td>
-            </tr>
+                <tr>
+                    <td>{{ heartbeat.mac }}</td>
+                    <td class="utc-time">{{ heartbeat.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC') }}</td>
+                    <td>{{ heartbeat.battery }} V</td>
+                    <td>{{ heartbeat.temperature or "N/A" }}</td>
+                    <td>{{ heartbeat.humidity or "N/A" }}</td>
+                </tr>
             {% endfor %}
         </tbody>
     </table>
-    
+
     <div id="map"></div>
 
     <div>
@@ -117,16 +121,16 @@
         </thead>
         <tbody>
             {% for network in networks.items %}
-            <tr>
-                <td>{{ network.ssid }}</td>
-                <td>{{ network.mac }}</td>
-                <td>{{ network.auth_mode }}</td>
-                <td class="utc-time">{{ network.first_seen.strftime('%Y-%m-%d %H:%M:%S UTC') }}</td>
-                <td>{{ network.channel }}</td>
-                <td>{{ network.rssi }}</td>
-                <td>{{ network.latitude }}</td>
-                <td>{{ network.longitude }}</td>
-            </tr>
+                <tr>
+                    <td>{{ network.ssid }}</td>
+                    <td>{{ network.mac }}</td>
+                    <td>{{ network.auth_mode }}</td>
+                    <td class="utc-time">{{ network.first_seen.strftime('%Y-%m-%d %H:%M:%S UTC') }}</td>
+                    <td>{{ network.channel }}</td>
+                    <td>{{ network.rssi }}</td>
+                    <td>{{ network.latitude }}</td>
+                    <td>{{ network.longitude }}</td>
+                </tr>
             {% endfor %}
         </tbody>
     </table>
