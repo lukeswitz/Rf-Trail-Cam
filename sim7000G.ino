@@ -10,32 +10,35 @@
 #include <algorithm>
 #include <esp_timer.h>
 #include <Adafruit_Sensor.h>
-#include <DHT.h>
-
-// DHT22 GPIO
-#define DHTPIN 33       
-#define DHTTYPE DHT22
-DHT dht(DHTPIN, DHTTYPE);
+#include <DHT22.h>
 
 // LilyGO T-SIM7000G Pinout
-#define UART_BAUD   115200
-#define PIN_TX      27
-#define PIN_RX      26
-#define PWR_PIN     4
-#define LED_PIN     12
-#define ADC_PIN     35
+#define UART_BAUD 115200
+#define PIN_TX 27
+#define PIN_RX 26
+#define PWR_PIN 4
+#define LED_PIN 12
+#define ADC_PIN 35
+
+
+// DHT22 GPIO
+#define DHTPIN 33
+#define DHTTYPE DHT22
+DHT22 dht(33);
+
+#define MAX_CONNECTION_ATTEMPTS 5
 
 #define SerialMon Serial
-#define SerialAT  Serial1
+#define SerialAT Serial1
 
-// Your GPRS credentials, if any
-const char apn[] = "h2g2";
+// Your GPRS credentials
+const char apn[] = "";  // Search for this one, it is required
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
 // Server details
-const char server[] = "3.16.206.200";
-const int  port = 5000;
+const char server[] = "x.x.x.x";
+const int port = 5000;
 
 TinyGsm modem(SerialAT);
 TinyGsmClient client(modem);
@@ -69,10 +72,7 @@ void setup() {
   digitalWrite(PWR_PIN, HIGH);
   delay(300);
   digitalWrite(PWR_PIN, LOW);
-  delay(1000);
-  
-  // Initialize DHT sensor
-  dht.begin();
+
   delay(1000);
 
   SerialAT.begin(UART_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
@@ -148,20 +148,24 @@ void loop() {
   }
 
   SerialMon.println("Starting WiFi scan...");
-  int n = WiFi.scanNetworks();
- 
+  WiFi.scanDelete();
+
+  // WiFi.scanNetworks(async, show_hidden, passive_scan, max_ms_per_channel)
+  int n = WiFi.scanNetworks(false, true, false, 110);
+
   if (n == 0) {
     SerialMon.println("No networks found");
   } else {
     SerialMon.printf("Found %d networks\n", n);
+    delay(1000); // delay 1s between scans
     for (int i = 0; i < n; ++i) {
       String mac = WiFi.BSSIDstr(i);
-      
+
       bool isNewNetwork = seenMacs.find(mac) == seenMacs.end();
-      
+
       if (isNewNetwork) {
         SerialMon.printf("Processing new network %d: %s\n", i + 1, mac.c_str());
-        
+
         // If we've reached MAX_MACS, remove the oldest one
         if (seenMacs.size() >= MAX_MACS) {
           String oldestMac = macOrder.front();
@@ -169,12 +173,12 @@ void loop() {
           seenMacs.erase(oldestMac);
           SerialMon.printf("Removed oldest network: %s\n", oldestMac.c_str());
         }
-        
+
         // Add the new MAC to our set and queue
         seenMacs.insert(mac);
         macOrder.push(mac);
-        
-        DynamicJsonDocument doc(1024);
+
+        JsonDocument doc = DynamicJsonDocument(1024);
         doc["mac"] = mac;
         doc["ssid"] = WiFi.SSID(i);
         doc["auth_mode"] = getAuthMode(WiFi.encryptionType(i));
@@ -185,7 +189,7 @@ void loop() {
         float lat, lon, speed, alt, accuracy;
         int vsat, usat;
         int year, month, day, hour, minute, second;
-        
+
         if (getGPS(&lat, &lon, &speed, &alt, &vsat, &usat, &accuracy, &year, &month, &day, &hour, &minute, &second)) {
           doc["latitude"] = lat;
           doc["longitude"] = lon;
@@ -242,6 +246,72 @@ bool getGPS(float *lat, float *lon, float *speed, float *alt, int *vsat, int *us
   }
 }
 
+bool connectGPRS() {
+  int attempts = 0;
+
+  // Make sure we're connected to the network first
+  SerialMon.print("Waiting for network...");
+  while (!modem.waitForNetwork(60000L) && attempts < MAX_CONNECTION_ATTEMPTS) {
+    SerialMon.print(".");
+    attempts++;
+    delay(5000);
+  }
+
+  if (attempts >= MAX_CONNECTION_ATTEMPTS) {
+    SerialMon.println(" fail");
+    SerialMon.println("Network connection failed after multiple attempts");
+    modemPowerCycle();
+    return false;
+  }
+  SerialMon.println(" success");
+
+  if (modem.isNetworkConnected()) {
+    SerialMon.println("Network connected");
+  }
+
+  // Now try GPRS connection
+  SerialMon.print(F("Connecting to "));
+  SerialMon.print(apn);
+  attempts = 0;
+
+  while (!modem.gprsConnect(apn, gprsUser, gprsPass) && attempts < MAX_CONNECTION_ATTEMPTS) {
+    SerialMon.print(".");
+    attempts++;
+    delay(5000);
+  }
+
+  if (attempts >= MAX_CONNECTION_ATTEMPTS) {
+    SerialMon.println(" fail");
+    SerialMon.println("GPRS connection failed after multiple attempts");
+    return false;
+  }
+
+  SerialMon.println(" success");
+
+  if (modem.isGprsConnected()) {
+    SerialMon.println("GPRS connected");
+    return true;
+  } else {
+    SerialMon.println("GPRS status check failed");
+    return false;
+  }
+}
+
+void modemPowerCycle() {
+  SerialMon.println("Power cycling modem...");
+
+  // Power off
+  digitalWrite(PWR_PIN, HIGH);
+  delay(1500);  // At least 1.2s according to datasheet
+
+  // Power on
+  digitalWrite(PWR_PIN, LOW);
+  delay(300);
+  digitalWrite(PWR_PIN, HIGH);
+
+  delay(3000);  // Wait for modem to initialize
+}
+
 String getAuthMode(wifi_auth_mode_t encryptionType) {
   switch (encryptionType) {
     case WIFI_AUTH_OPEN: return "open";
@@ -260,51 +330,52 @@ float getBatteryVoltage() {
 }
 
 void readDHT22(float &temperature, float &humidity) {
-    temperature = dht.readTemperature();
-    humidity = dht.readHumidity();
+  temperature = dht.getTemperature();
+  humidity = dht.getHumidity();
 
-    if (isnan(temperature) || isnan(humidity)) {
-        SerialMon.println("Failed to read from DHT22 sensor!");
-        temperature = -1;
-        humidity = -1;
-    } else {
-        SerialMon.printf("Temperature: %.2f °C, Humidity: %.2f %%\n", temperature, humidity);
-    }
+  if (isnan(temperature) || isnan(humidity)) {
+    SerialMon.println("Failed to read from DHT22 sensor!");
+    temperature = -1;
+    humidity = -1;
+  } else {
+    SerialMon.printf("Temperature: %.2f °C, Humidity: %.2f %%\n", temperature, humidity);
+  }
 }
 
+
 void sendHeartbeat() {
-    SerialMon.println("Sending heartbeat...");
+  SerialMon.println("Sending heartbeat...");
 
-    // Read DHT22 data
-    float temperature = 0.0;
-    float humidity = 0.0;
-    readDHT22(temperature, humidity);
+  // Read DHT22 data
+  float temperature = 0.0;
+  float humidity = 0.0;
+  readDHT22(temperature, humidity);
 
-    // Prepare JSON payload
-    DynamicJsonDocument doc(256);
-    doc["type"] = "heartbeat";
-    doc["mac"] = WiFi.macAddress();
-    doc["battery"] = getBatteryVoltage();
-    doc["temperature"] = temperature; // Add temperature to payload
-    doc["humidity"] = humidity;       // Add humidity to payload
+  // Prepare JSON payload
+  JsonDocument doc = DynamicJsonDocument(1024);
+  doc["type"] = "heartbeat";
+  doc["mac"] = WiFi.macAddress();
+  doc["battery"] = getBatteryVoltage();
+  doc["temperature"] = temperature;
+  doc["humidity"] = humidity;
 
-    String payload;
-    serializeJson(doc, payload);
+  String payload;
+  serializeJson(doc, payload);
 
-    // Send HTTP POST request
-    http.beginRequest();
-    http.post("/api/heartbeat");
-    http.sendHeader("Content-Type", "application/json");
-    http.sendHeader("Content-Length", payload.length());
-    http.beginBody();
-    http.print(payload);
-    http.endRequest();
+  // Send HTTP POST request
+  http.beginRequest();
+  http.post("/api/heartbeat");
+  http.sendHeader("Content-Type", "application/json");
+  http.sendHeader("Content-Length", payload.length());
+  http.beginBody();
+  http.print(payload);
+  http.endRequest();
 
-    int statusCode = http.responseStatusCode();
-    String response = http.responseBody();
+  int statusCode = http.responseStatusCode();
+  String response = http.responseBody();
 
-    SerialMon.print("Heartbeat status code: ");
-    SerialMon.println(statusCode);
-    SerialMon.print("Heartbeat response: ");
-    SerialMon.println(response);
+  SerialMon.print("Heartbeat status code: ");
+  SerialMon.println(statusCode);
+  SerialMon.print("Heartbeat response: ");
+  SerialMon.println(response);
 }
