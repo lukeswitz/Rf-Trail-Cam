@@ -43,9 +43,8 @@ class Heartbeat(db.Model):
     mac = db.Column(db.String(17), nullable=False)
     timestamp = db.Column(db.DateTime, nullable=False)
     battery = db.Column(db.Float, nullable=False)
-    temperature = db.Column(db.Float, nullable=True)  # Add temperature field
-    humidity = db.Column(db.Float, nullable=True)     # Add humidity field
-
+    temperature = db.Column(db.Float, nullable=True)
+    humidity = db.Column(db.Float, nullable=True)
 
 def login_required(f):
     @wraps(f)
@@ -81,6 +80,7 @@ def index():
 @app.route('/api/wigle_data', methods=['POST'])
 def receive_wigle_data():
     data = request.json
+    print(f"Received data: {data}")
     first_seen = datetime.now(timezone.utc)
     
     new_entry = WigleData(
@@ -113,22 +113,22 @@ def receive_heartbeat():
     )
     db.session.add(new_heartbeat)
     db.session.commit()
-    return jsonify({
-        "status": "success",
-        "timestamp": timestamp.isoformat(),
-        "temperature": new_heartbeat.temperature,
-        "humidity": new_heartbeat.humidity
-    }), 201
+    return jsonify({"status": "success", "timestamp": timestamp.isoformat()}), 201
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        if request.form['username'] == 'CHANGETHIS' and request.form['password'] == 'CHANGETHIS_PASSWORD':
+        username = request.form['username']
+        password = request.form['password']
+        
+        # Replace these with actual credentials
+        if username == 'user' and password == 'password':
             session['logged_in'] = True
             return redirect(url_for('index'))
         else:
             return render_template('login.html', error='Invalid credentials')
     return render_template('login.html')
+
 
 @app.route('/logout')
 def logout():
@@ -204,4 +204,7 @@ def upload_to_wigle():
         return jsonify({"status": "error", "message": f"Failed to upload to WiGLE: {response.text}"}), 500
 
 if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
     app.run(host='0.0.0.0', port=5000, debug=True)
+    
