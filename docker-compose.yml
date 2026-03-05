@@ -1,0 +1,20 @@
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - db-data:/app/instance
+    expose:
+      - "5000"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    env_file:
+      - .env
+    depends_on:
+      - web
+
+volumes:
+  db-data:

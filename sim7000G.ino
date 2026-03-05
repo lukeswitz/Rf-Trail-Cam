@@ -1,16 +1,12 @@
 #define TINY_GSM_MODEM_SIM7000
-#define TINY_GSM_RX_BUFFER 1024 // Set RX buffer to 1Kb
+#define TINY_GSM_RX_BUFFER 1024
 
 #include <TinyGsmClient.h>
 #include <ArduinoHttpClient.h>
-#include <ArduinoJson.h>
 #include <WiFi.h>
-#include <set>
-#include <queue>
-#include <algorithm>
-#include <esp_timer.h>
+#include <esp_task_wdt.h>
 
-// LilyGO T-SIM7000G Pinout
+// ─── Pin definitions (LilyGO T-SIM7000G) ───
 #define UART_BAUD   115200
 #define PIN_TX      27
 #define PIN_RX      26
@@ -21,258 +17,520 @@
 #define SerialMon Serial
 #define SerialAT  Serial1
 
-// Your GPRS credentials, if any
-const char apn[] = "h2g2";
+// ─── Configuration ───
+const char apn[]      = "h2g2";
 const char gprsUser[] = "";
 const char gprsPass[] = "";
+const char server[]   = "3.16.206.200";
+const int  port       = 5000;
 
-// Server details
-const char server[] = "3.16.206.200";
-const int  port = 5000;
+// Timing
+const unsigned long UPLOAD_INTERVAL_MS   = 5UL * 60 * 1000;  // 5 minutes
+const unsigned long REBOOT_INTERVAL_MS   = 6UL * 60 * 60 * 1000; // 6 hours
+const unsigned long GPS_FIX_TIMEOUT_MS   = 90000; // 90s initial fix wait
+const unsigned long WDT_TIMEOUT_S        = 120;   // watchdog timeout
 
-TinyGsm modem(SerialAT);
+// Buffer sizes
+const uint16_t MAX_SEEN_BSSIDS   = 1000;
+const uint16_t MAX_UPLOAD_BUFFER = 100;
+const uint8_t  MAX_CONSECUTIVE_FAILURES = 3;
+
+// ─── Data structures ───
+struct WiFiNetwork {
+    uint8_t bssid[6];
+    char    ssid[33];
+    int8_t  rssi;
+    uint8_t channel;
+    uint8_t authMode;
+    float   lat, lon;
+    float   alt, accuracy;
+    bool    hasGps;
+};
+
+struct GPSData {
+    float lat, lon, alt, accuracy;
+    bool  valid;
+};
+
+// ─── Global state ───
+// Dedup circular buffer
+uint8_t  seenBssids[MAX_SEEN_BSSIDS][6];
+uint16_t seenCount = 0;
+uint16_t seenHead  = 0;
+
+// Upload buffer
+WiFiNetwork uploadBuffer[MAX_UPLOAD_BUFFER];
+uint16_t    uploadBufferCount = 0;
+
+// Cached GPS
+GPSData gpsCache = {0, 0, 0, 0, false};
+
+// State tracking
+bool     scanInProgress    = false;
+unsigned long lastUploadTime    = 0;
+unsigned long bootTime          = 0;
+uint8_t  consecutiveFailures   = 0;
+uint8_t  cfunFailures          = 0;
+
+// Modem & HTTP
+TinyGsm       modem(SerialAT);
 TinyGsmClient client(modem);
-HttpClient http(client, server, port);
+HttpClient    http(client, server, port);
 
-// Set to store unique MAC addresses
-std::set<String> seenMacs;
-// Queue to keep track of the order of MAC addresses
-std::queue<String> macOrder;
-const size_t MAX_MACS = 500;
+// ─── Forward declarations ───
+void    disableCellularRF();
+bool    enableCellularAndConnect();
+void    updateGPSCache();
+bool    isSeen(const uint8_t *bssid);
+void    addSeen(const uint8_t *bssid);
+void    processScanResults(int count);
+bool    uploadNetworks();
+bool    sendHeartbeat();
+void    performUploadWindow();
+const char* getAuthMode(uint8_t encType);
+String  bssidToString(const uint8_t *bssid);
+float   getBatteryVoltage();
+void    modemPowerToggle();
 
-// Heartbeat variables
-unsigned long lastHeartbeatTime = 0;
-const unsigned long heartbeatInterval = 5 * 60 * 1000; // 5 minutes in milliseconds
+// ═══════════════════════════════════════════════
+// Modem cellular control
+// ═══════════════════════════════════════════════
 
-// Reboot timer
-esp_timer_handle_t reboot_timer;
-
-void IRAM_ATTR rebootNow(void* arg) {
-  esp_restart();
+void disableCellularRF() {
+    SerialMon.println("Disabling cellular RF (CFUN=0)...");
+    modem.sendAT("+CFUN=0");
+    modem.waitResponse(10000L);
 }
 
-void setup() {
-  SerialMon.begin(115200);
-  SerialMon.println("Starting up...");
+bool enableCellularAndConnect() {
+    SerialMon.println("Enabling cellular RF (CFUN=1)...");
+    modem.sendAT("+CFUN=1");
+    if (modem.waitResponse(10000L) != 1) {
+        SerialMon.println("CFUN=1 failed");
+        cfunFailures++;
+        if (cfunFailures >= 3) {
+            SerialMon.println("CFUN failed 3 times, power cycling modem...");
+            modemPowerToggle();
+            cfunFailures = 0;
+            delay(3000);
+            modem.sendAT("+CFUN=1");
+            if (modem.waitResponse(10000L) != 1) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    cfunFailures = 0;
 
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
+    SerialMon.println("Waiting for network...");
+    if (!modem.waitForNetwork(60000L)) {
+        SerialMon.println("Network registration failed");
+        return false;
+    }
 
-  pinMode(PWR_PIN, OUTPUT);
-  digitalWrite(PWR_PIN, HIGH);
-  delay(300);
-  digitalWrite(PWR_PIN, LOW);
-
-  delay(1000);
-
-  SerialAT.begin(UART_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
-
-  SerialMon.println("Initializing modem...");
-  if (!modem.restart()) {
-    SerialMon.println("Failed to restart modem, attempting to continue without restarting");
-  }
-
-  String modemInfo = modem.getModemInfo();
-  SerialMon.print("Modem Info: ");
-  SerialMon.println(modemInfo);
-
-  // Set up reboot timer (1 hour)
-  const esp_timer_create_args_t periodic_timer_args = {
-    .callback = &rebootNow,
-    .name = "reboot"
-  };
-  ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &reboot_timer));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(reboot_timer, 3600000000)); // 1 hour in microseconds
-
-  SerialMon.print("Waiting for network...");
-  if (!modem.waitForNetwork()) {
-    SerialMon.println(" fail");
-    delay(10000);
-    return;
-  }
-  SerialMon.println(" success");
-
-  if (modem.isNetworkConnected()) {
-    SerialMon.println("Network connected");
-  }
-
-  SerialMon.print(F("Connecting to "));
-  SerialMon.print(apn);
-  if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
-    SerialMon.println(" fail");
-    delay(10000);
-    return;
-  }
-  SerialMon.println(" success");
-
-  if (modem.isGprsConnected()) {
-    SerialMon.println("GPRS connected");
-  }
-
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
-
-  // Turn on GPS power
-  SerialMon.println("Turning on GPS power...");
-  modem.sendAT("+SGPIO=0,4,1,1");
-  if (modem.waitResponse(10000L) != 1) {
-    SerialMon.println("Failed to turn on GPS power");
-  }
-
-  // Enable GPS
-  SerialMon.println("Enabling GPS...");
-  modem.enableGPS();
-
-  SerialMon.println("Setup completed.");
-}
-
-void loop() {
-  if (!modem.isNetworkConnected()) {
-    SerialMon.println("Network disconnected. Reconnecting...");
+    SerialMon.println("Connecting GPRS...");
     if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
-      SerialMon.println(" fail");
-      delay(10000);
-      return;
+        SerialMon.println("GPRS connect failed");
+        return false;
     }
-  }
 
-  SerialMon.println("Starting WiFi scan...");
-  int n = WiFi.scanNetworks();
- 
-  if (n == 0) {
-    SerialMon.println("No networks found");
-  } else {
-    SerialMon.printf("Found %d networks\n", n);
-    for (int i = 0; i < n; ++i) {
-      String mac = WiFi.BSSIDstr(i);
-      
-      bool isNewNetwork = seenMacs.find(mac) == seenMacs.end();
-      
-      if (isNewNetwork) {
-        SerialMon.printf("Processing new network %d: %s\n", i + 1, mac.c_str());
-        
-        // If we've reached MAX_MACS, remove the oldest one
-        if (seenMacs.size() >= MAX_MACS) {
-          String oldestMac = macOrder.front();
-          macOrder.pop();
-          seenMacs.erase(oldestMac);
-          SerialMon.printf("Removed oldest network: %s\n", oldestMac.c_str());
-        }
-        
-        // Add the new MAC to our set and queue
-        seenMacs.insert(mac);
-        macOrder.push(mac);
-        
-        DynamicJsonDocument doc(1024);
-        doc["mac"] = mac;
-        doc["ssid"] = WiFi.SSID(i);
-        doc["auth_mode"] = getAuthMode(WiFi.encryptionType(i));
-        doc["channel"] = WiFi.channel(i);
-        doc["rssi"] = WiFi.RSSI(i);
-
-        // Try to get GPS data
-        float lat, lon, speed, alt, accuracy;
-        int vsat, usat;
-        int year, month, day, hour, minute, second;
-        
-        if (getGPS(&lat, &lon, &speed, &alt, &vsat, &usat, &accuracy, &year, &month, &day, &hour, &minute, &second)) {
-          doc["latitude"] = lat;
-          doc["longitude"] = lon;
-          doc["altitude"] = alt;
-          doc["accuracy"] = accuracy;
-        }
-
-        String payload;
-        serializeJson(doc, payload);
-
-        SerialMon.println("Sending data to server...");
-        http.beginRequest();
-        http.post("/api/wigle_data");
-        http.sendHeader("Content-Type", "application/json");
-        http.sendHeader("Content-Length", payload.length());
-        http.beginBody();
-        http.print(payload);
-        http.endRequest();
-
-        int statusCode = http.responseStatusCode();
-        String response = http.responseBody();
-
-        SerialMon.print("Status code: ");
-        SerialMon.println(statusCode);
-        SerialMon.print("Response: ");
-        SerialMon.println(response);
-      } else {
-        SerialMon.printf("Skipping known network %d: %s\n", i + 1, mac.c_str());
-      }
-    }
-  }
-
-  // Check if it's time to send a heartbeat
-  unsigned long currentTime = millis();
-  if (currentTime - lastHeartbeatTime >= heartbeatInterval) {
-    sendHeartbeat();
-    lastHeartbeatTime = currentTime;
-  }
-
-  SerialMon.println("Waiting before next scan...");
-  delay(3000);
-}
-
-bool getGPS(float *lat, float *lon, float *speed, float *alt, int *vsat, int *usat, float *accuracy,
-            int *year, int *month, int *day, int *hour, int *minute, int *second) {
-  SerialMon.println("Getting GPS data...");
-  if (modem.getGPS(lat, lon, speed, alt, vsat, usat, accuracy, year, month, day, hour, minute, second)) {
-    SerialMon.println("GPS data acquired successfully.");
-    SerialMon.printf("Lat: %f, Lon: %f, Alt: %f, Acc: %f\n", *lat, *lon, *alt, *accuracy);
+    SerialMon.println("Cellular connected");
     return true;
-  } else {
-    SerialMon.println("Couldn't get GPS location.");
-    return false;
-  }
 }
 
-String getAuthMode(wifi_auth_mode_t encryptionType) {
-  switch (encryptionType) {
-    case WIFI_AUTH_OPEN: return "open";
-    case WIFI_AUTH_WEP: return "wep";
-    case WIFI_AUTH_WPA_PSK: return "wpa";
-    case WIFI_AUTH_WPA2_PSK: return "wpa2";
-    case WIFI_AUTH_WPA_WPA2_PSK: return "wpa/wpa2";
-    default: return "unknown";
-  }
+void modemPowerToggle() {
+    SerialMon.println("Power cycling modem via PWR_PIN...");
+    digitalWrite(PWR_PIN, HIGH);
+    delay(1500);
+    digitalWrite(PWR_PIN, LOW);
+    delay(3000);
+    // Re-init modem
+    modem.restart();
+    // Re-enable GPS after restart
+    modem.sendAT("+SGPIO=0,4,1,1");
+    modem.waitResponse(10000L);
+    modem.sendAT("+CGNSPWR=1");
+    modem.waitResponse(10000L);
+}
+
+// ═══════════════════════════════════════════════
+// GPS
+// ═══════════════════════════════════════════════
+
+void updateGPSCache() {
+    float lat, lon, speed, alt, accuracy;
+    int vsat, usat, year, month, day, hour, minute, second;
+
+    if (modem.getGPS(&lat, &lon, &speed, &alt, &vsat, &usat, &accuracy,
+                     &year, &month, &day, &hour, &minute, &second)) {
+        gpsCache.lat      = lat;
+        gpsCache.lon      = lon;
+        gpsCache.alt      = alt;
+        gpsCache.accuracy = accuracy;
+        gpsCache.valid    = true;
+    }
+    // If getGPS fails, keep previous cached values (valid stays as-is)
+}
+
+// ═══════════════════════════════════════════════
+// WiFi dedup & scan processing
+// ═══════════════════════════════════════════════
+
+bool isSeen(const uint8_t *bssid) {
+    for (uint16_t i = 0; i < seenCount; i++) {
+        if (memcmp(seenBssids[i], bssid, 6) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void addSeen(const uint8_t *bssid) {
+    if (seenCount < MAX_SEEN_BSSIDS) {
+        memcpy(seenBssids[seenCount], bssid, 6);
+        seenCount++;
+    } else {
+        // Circular overwrite
+        memcpy(seenBssids[seenHead], bssid, 6);
+        seenHead = (seenHead + 1) % MAX_SEEN_BSSIDS;
+    }
+}
+
+void processScanResults(int count) {
+    // Update GPS once for this scan cycle
+    updateGPSCache();
+
+    for (int i = 0; i < count; i++) {
+        // WiFi.BSSID(i) returns pointer invalidated by scanDelete — copy immediately
+        uint8_t *bssidPtr = WiFi.BSSID(i);
+        if (!bssidPtr) continue;
+
+        uint8_t bssid[6];
+        memcpy(bssid, bssidPtr, 6);
+
+        if (isSeen(bssid)) continue;
+
+        addSeen(bssid);
+
+        // If upload buffer is full, we can't store more — they'll be re-discovered later
+        if (uploadBufferCount >= MAX_UPLOAD_BUFFER) {
+            SerialMon.println("Upload buffer full, skipping remaining new networks");
+            break;
+        }
+
+        WiFiNetwork *net = &uploadBuffer[uploadBufferCount];
+        memcpy(net->bssid, bssid, 6);
+        strncpy(net->ssid, WiFi.SSID(i).c_str(), 32);
+        net->ssid[32] = '\0';
+        net->rssi     = (int8_t)WiFi.RSSI(i);
+        net->channel  = (uint8_t)WiFi.channel(i);
+        net->authMode = (uint8_t)WiFi.encryptionType(i);
+        net->lat      = gpsCache.lat;
+        net->lon      = gpsCache.lon;
+        net->alt      = gpsCache.alt;
+        net->accuracy = gpsCache.accuracy;
+        net->hasGps   = gpsCache.valid;
+
+        uploadBufferCount++;
+
+        SerialMon.printf("New: %s [%s] ch%d %ddBm (buf:%d)\n",
+            bssidToString(bssid).c_str(), net->ssid, net->channel, net->rssi, uploadBufferCount);
+    }
+
+    WiFi.scanDelete();
+}
+
+// ═══════════════════════════════════════════════
+// Upload functions
+// ═══════════════════════════════════════════════
+
+bool uploadNetworks() {
+    if (uploadBufferCount == 0) return true;
+
+    SerialMon.printf("Uploading %d networks...\n", uploadBufferCount);
+
+    // Build JSON array manually to avoid large ArduinoJson allocation
+    String payload = "[";
+    for (uint16_t i = 0; i < uploadBufferCount; i++) {
+        WiFiNetwork *net = &uploadBuffer[i];
+        if (i > 0) payload += ",";
+
+        payload += "{\"mac\":\"";
+        payload += bssidToString(net->bssid);
+        payload += "\",\"ssid\":\"";
+        // Escape any quotes in SSID
+        for (int j = 0; net->ssid[j] != '\0'; j++) {
+            if (net->ssid[j] == '"') payload += "\\\"";
+            else if (net->ssid[j] == '\\') payload += "\\\\";
+            else payload += net->ssid[j];
+        }
+        payload += "\",\"auth_mode\":\"";
+        payload += getAuthMode(net->authMode);
+        payload += "\",\"channel\":";
+        payload += String(net->channel);
+        payload += ",\"rssi\":";
+        payload += String(net->rssi);
+
+        if (net->hasGps) {
+            payload += ",\"latitude\":";
+            payload += String(net->lat, 6);
+            payload += ",\"longitude\":";
+            payload += String(net->lon, 6);
+            payload += ",\"altitude\":";
+            payload += String(net->alt, 1);
+            payload += ",\"accuracy\":";
+            payload += String(net->accuracy, 1);
+        }
+
+        payload += "}";
+    }
+    payload += "]";
+
+    SerialMon.printf("Payload size: %d bytes\n", payload.length());
+
+    http.beginRequest();
+    http.post("/api/wigle_data_batch");
+    http.sendHeader("Content-Type", "application/json");
+    http.sendHeader("Content-Length", payload.length());
+    http.beginBody();
+    http.print(payload);
+    http.endRequest();
+
+    int statusCode = http.responseStatusCode();
+    String response = http.responseBody(); // Must consume body
+
+    SerialMon.printf("Upload status: %d\n", statusCode);
+
+    if (statusCode == 201 || statusCode == 200) {
+        uploadBufferCount = 0;
+        return true;
+    }
+
+    SerialMon.printf("Upload failed: %s\n", response.c_str());
+    return false;
+}
+
+bool sendHeartbeat() {
+    SerialMon.println("Sending heartbeat...");
+
+    float batt = getBatteryVoltage();
+    String payload = "{\"type\":\"heartbeat\",\"mac\":\"";
+    payload += WiFi.macAddress();
+    payload += "\",\"battery\":";
+    payload += String(batt, 2);
+    payload += "}";
+
+    http.beginRequest();
+    http.post("/api/heartbeat");
+    http.sendHeader("Content-Type", "application/json");
+    http.sendHeader("Content-Length", payload.length());
+    http.beginBody();
+    http.print(payload);
+    http.endRequest();
+
+    int statusCode = http.responseStatusCode();
+    http.responseBody(); // Consume body
+
+    SerialMon.printf("Heartbeat status: %d\n", statusCode);
+    return (statusCode == 200 || statusCode == 201);
+}
+
+void performUploadWindow() {
+    bool hasData = (uploadBufferCount > 0);
+
+    if (!hasData) {
+        SerialMon.println("Upload window: buffer empty, skipping");
+        return;
+    }
+
+    SerialMon.printf("=== Upload window: %d networks to send ===\n", uploadBufferCount);
+
+    if (!enableCellularAndConnect()) {
+        SerialMon.println("Failed to connect cellular, will retry next window");
+        consecutiveFailures++;
+        disableCellularRF();
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            SerialMon.println("Too many consecutive failures, rebooting...");
+            ESP.restart();
+        }
+        return;
+    }
+
+    bool uploadOk = uploadNetworks();
+    sendHeartbeat(); // Best effort
+
+    if (uploadOk) {
+        consecutiveFailures = 0;
+    } else {
+        consecutiveFailures++;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            SerialMon.println("Too many consecutive failures, rebooting...");
+            ESP.restart();
+        }
+    }
+
+    // Disconnect and disable cellular RF
+    modem.gprsDisconnect();
+    disableCellularRF();
+
+    SerialMon.println("=== Upload window complete ===");
+}
+
+// ═══════════════════════════════════════════════
+// Utility functions
+// ═══════════════════════════════════════════════
+
+String bssidToString(const uint8_t *bssid) {
+    char buf[18];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    return String(buf);
+}
+
+const char* getAuthMode(uint8_t encType) {
+    switch (encType) {
+        case WIFI_AUTH_OPEN:         return "open";
+        case WIFI_AUTH_WEP:          return "wep";
+        case WIFI_AUTH_WPA_PSK:      return "wpa";
+        case WIFI_AUTH_WPA2_PSK:     return "wpa2";
+        case WIFI_AUTH_WPA_WPA2_PSK: return "wpa/wpa2";
+        default:                     return "unknown";
+    }
 }
 
 float getBatteryVoltage() {
-  uint16_t v = analogRead(ADC_PIN);
-  float battery_voltage = ((float)v / 4095.0) * 2.0 * 3.3 * (1100 / 1000.0);
-  return battery_voltage;
+    uint16_t v = analogRead(ADC_PIN);
+    return ((float)v / 4095.0) * 2.0 * 3.3 * (1100.0 / 1000.0);
 }
 
-void sendHeartbeat() {
-  SerialMon.println("Sending heartbeat...");
-  
-  DynamicJsonDocument doc(256);
-  doc["type"] = "heartbeat";
-  doc["mac"] = WiFi.macAddress();
-  doc["battery"] = getBatteryVoltage();
+// ═══════════════════════════════════════════════
+// setup()
+// ═══════════════════════════════════════════════
 
-  String payload;
-  serializeJson(doc, payload);
+void setup() {
+    SerialMon.begin(115200);
+    SerialMon.println("Starting up...");
 
-  http.beginRequest();
-  http.post("/api/heartbeat");
-  http.sendHeader("Content-Type", "application/json");
-  http.sendHeader("Content-Length", payload.length());
-  http.beginBody();
-  http.print(payload);
-  http.endRequest();
+    bootTime = millis();
 
-  int statusCode = http.responseStatusCode();
-  String response = http.responseBody();
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);
 
-  SerialMon.print("Heartbeat status code: ");
-  SerialMon.println(statusCode);
-  SerialMon.print("Heartbeat response: ");
-  SerialMon.println(response);
+    // Power on modem
+    pinMode(PWR_PIN, OUTPUT);
+    digitalWrite(PWR_PIN, HIGH);
+    delay(300);
+    digitalWrite(PWR_PIN, LOW);
+    delay(1000);
+
+    SerialAT.begin(UART_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
+
+    SerialMon.println("Initializing modem...");
+    if (!modem.restart()) {
+        SerialMon.println("Failed to restart modem, continuing...");
+    }
+
+    String modemInfo = modem.getModemInfo();
+    SerialMon.print("Modem Info: ");
+    SerialMon.println(modemInfo);
+
+    // Enable GPS antenna power
+    SerialMon.println("Enabling GPS...");
+    modem.sendAT("+SGPIO=0,4,1,1");
+    modem.waitResponse(10000L);
+    modem.sendAT("+CGNSPWR=1");
+    modem.waitResponse(10000L);
+
+    // Wait for initial GPS fix
+    SerialMon.println("Waiting for GPS fix...");
+    unsigned long gpsStart = millis();
+    while (millis() - gpsStart < GPS_FIX_TIMEOUT_MS) {
+        updateGPSCache();
+        if (gpsCache.valid) {
+            SerialMon.printf("GPS fix: %.6f, %.6f\n", gpsCache.lat, gpsCache.lon);
+            break;
+        }
+        delay(2000);
+    }
+    if (!gpsCache.valid) {
+        SerialMon.println("No GPS fix after timeout, continuing without");
+    }
+
+    // Send boot heartbeat over cellular (modem is already up from restart)
+    SerialMon.println("Connecting cellular for boot heartbeat...");
+    if (modem.waitForNetwork(60000L)) {
+        if (modem.gprsConnect(apn, gprsUser, gprsPass)) {
+            sendHeartbeat();
+            modem.gprsDisconnect();
+        }
+    }
+
+    // Disable cellular RF — GPS stays on via GNSS subsystem
+    disableCellularRF();
+
+    // Init WiFi for scanning
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100);
+
+    // Start first async scan
+    WiFi.scanNetworks(true);
+    scanInProgress = true;
+
+    lastUploadTime = millis();
+
+    // Enable hardware watchdog
+    esp_task_wdt_init(WDT_TIMEOUT_S, true);
+    esp_task_wdt_add(NULL);
+
+    SerialMon.println("Setup complete. Scanning...");
+}
+
+// ═══════════════════════════════════════════════
+// loop()
+// ═══════════════════════════════════════════════
+
+void loop() {
+    // Feed watchdog
+    esp_task_wdt_reset();
+
+    // Periodic reboot for long-term stability
+    if (millis() - bootTime > REBOOT_INTERVAL_MS) {
+        SerialMon.println("Scheduled reboot (6h)...");
+        ESP.restart();
+    }
+
+    // ── Async WiFi scan state machine ──
+    if (scanInProgress) {
+        int result = WiFi.scanComplete();
+        if (result == WIFI_SCAN_RUNNING) {
+            // Still scanning, nothing to do
+        } else if (result == WIFI_SCAN_FAILED || result < 0) {
+            // Scan failed — clean up and restart
+            WiFi.scanDelete();
+            WiFi.scanNetworks(true);
+        } else if (result >= 0) {
+            // Scan complete with results
+            if (result > 0) {
+                processScanResults(result);
+            } else {
+                WiFi.scanDelete();
+            }
+            // Immediately start next scan
+            WiFi.scanNetworks(true);
+        }
+    }
+
+    // ── Check upload triggers ──
+    unsigned long now = millis();
+    bool timeToUpload  = (now - lastUploadTime >= UPLOAD_INTERVAL_MS);
+    bool bufferFull    = (uploadBufferCount >= MAX_UPLOAD_BUFFER);
+
+    if (timeToUpload || bufferFull) {
+        performUploadWindow();
+        lastUploadTime = millis();
+    }
+
+    delay(10); // Yield to system tasks
 }
