@@ -59,4 +59,6 @@ The server creates its SQLite database in the `instance` folder next to `app.py`
 2. In `sim7000G.ino`, set `apn` to your cellular provider's APN (the access point name your SIM needs to get online). Set `server` and `port` to your server's address and port, and set `deviceToken` to the same value as `DEVICE_TOKEN` on the server.
 3. Flash `sim7000G.ino` to the LilyGO T-SIM7000G.
 
-The sketch compiles with version 3.3.10 of the esp32 Arduino core.
+By default the device sends its uploads over plain HTTP, so anyone on the network path can read the networks, positions and device token. To send them over HTTPS instead, set `#define USE_TLS 1`, set `server` to the site's host name and set `port` to `443`. With Docker Compose, the host name is the one your Cloudflare Tunnel publishes, because port 5000 is not reachable from outside. The SIM7000 TLS connection encrypts the traffic but does not check the server's certificate.
+
+The sketch compiles with version 3.3.10 of the esp32 Arduino core, with `USE_TLS` set to `0` or `1`. The TLS setting has not been tested on a device.

@@ -1,4 +1,10 @@
+#define USE_TLS 0
+
+#if USE_TLS
+#define TINY_GSM_MODEM_SIM7000SSL
+#else
 #define TINY_GSM_MODEM_SIM7000
+#endif
 #define TINY_GSM_RX_BUFFER 1024
 
 #include <TinyGsmClient.h>
@@ -30,7 +36,7 @@ const char gprsUser[] = "";
 const char gprsPass[] = "";
 const char server[]   = "x.x.x.x";
 const int  port       = 5000;
-const char deviceToken[] = "";  // Must match DEVICE_TOKEN on the server
+const char deviceToken[] = "";
 
 // Timing
 const unsigned long UPLOAD_INTERVAL_MS   = 5UL * 60 * 1000;  // 5 minutes
@@ -82,7 +88,11 @@ uint8_t  cfunFailures          = 0;
 
 // Modem & HTTP
 TinyGsm       modem(SerialAT);
+#if USE_TLS
+TinyGsmClientSecure client(modem);
+#else
 TinyGsmClient client(modem);
+#endif
 HttpClient    http(client, server, port);
 
 // ─── Forward declarations ───
