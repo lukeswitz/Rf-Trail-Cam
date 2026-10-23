@@ -6,6 +6,8 @@ services:
       - db-data:/app/instance
     env_file:
       - .env
+    environment:
+      TRUST_CF_CONNECTING_IP: "1"
     expose:
       - "5000"
 

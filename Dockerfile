@@ -15,7 +15,6 @@ RUN useradd --create-home --uid 10001 app \
 USER app
 
 ENV SESSION_COOKIE_SECURE=1
-ENV TRUST_CF_CONNECTING_IP=1
 
 EXPOSE 5000
 
