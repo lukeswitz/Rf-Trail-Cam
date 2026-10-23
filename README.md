@@ -62,6 +62,17 @@ The server creates its SQLite database in the `instance` folder next to `app.py`
 2. In `sim7000G.ino`, set `apn` to your cellular provider's APN (the access point name your SIM needs to get online). Set `server` and `port` to your server's address and port, and set `deviceToken` to the same value as `DEVICE_TOKEN` on the server.
 3. Flash `sim7000G.ino` to the LilyGO T-SIM7000G.
 
-By default the device sends its uploads over plain HTTP, so anyone on the network path can read the networks, positions and device token. To send them over HTTPS instead, set `#define USE_TLS 1`, set `server` to the site's host name and set `port` to `443`. With Docker Compose, the host name is the one your Cloudflare Tunnel publishes, because port 5000 is not reachable from outside. The SIM7000 TLS connection encrypts the traffic but does not check the server's certificate.
+By default the device sends its uploads over plain HTTP, so anyone on the network path can read the networks, positions and device token. To send them over HTTPS instead, set `#define USE_TLS 1`, set `server` to the site's host name and set `port` to `443`. With Docker Compose, the host name is the one your Cloudflare Tunnel publishes, because port 5000 is not reachable from outside.
 
-The sketch compiles with version 3.3.10 of the esp32 Arduino core, with `USE_TLS` set to `0` or `1`. The TLS setting has not been tested on a device.
+With `USE_TLS 1` and an empty `caCert`, the connection is encrypted but the device does not check who it is talking to. To make the device check the server's certificate, put the PEM text of the root CA certificate that issued your site's certificate in `caCert`, starting at `-----BEGIN CERTIFICATE-----` and ending each line with `\r\n`:
+
+```cpp
+const char caCert[] =
+"-----BEGIN CERTIFICATE-----\r\n"
+"MIIF...\r\n"
+"-----END CERTIFICATE-----\r\n";
+```
+
+At boot the device writes the certificate to the modem's file system as `ca.pem` and converts it for TLS use. The modem then refuses any server whose certificate does not chain to that root or whose name does not match `server`. It does not check certificate expiry dates, because the modem clock is not set. If your site's certificate is later issued under a different root CA, replace `caCert`.
+
+The sketch compiles with version 3.3.10 of the esp32 Arduino core, with `USE_TLS` set to `0` or `1`. TLS and certificate checking have not been tested on a device.

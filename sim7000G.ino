@@ -37,6 +37,7 @@ const char gprsPass[] = "";
 const char server[]   = "x.x.x.x";
 const int  port       = 5000;
 const char deviceToken[] = "";
+const char caCert[] = "";
 
 // Timing
 const unsigned long UPLOAD_INTERVAL_MS   = 5UL * 60 * 1000;  // 5 minutes
@@ -109,6 +110,10 @@ const char* getAuthMode(uint8_t encType);
 String  bssidToString(const uint8_t *bssid);
 void    appendJsonEscaped(String &out, const char *s);
 float   getBatteryVoltage();
+#if USE_TLS
+bool    loadCACert();
+void    configureCertCheck();
+#endif
 void    readDHT22(float &temperature, float &humidity);
 void    modemPowerToggle();
 
@@ -155,9 +160,44 @@ bool enableCellularAndConnect() {
         return false;
     }
 
+#if USE_TLS
+    if (caCert[0] != '\0') configureCertCheck();
+#endif
+
     SerialMon.println("Cellular connected");
     return true;
 }
+
+#if USE_TLS
+bool loadCACert() {
+    size_t len = strlen(caCert);
+    modem.sendAT("+CFSINIT");
+    modem.waitResponse();
+    modem.sendAT("+CFSWFILE=3,\"ca.pem\",0,", len, ",5000");
+    if (modem.waitResponse(2000L, GF("DOWNLOAD")) != 1) {
+        modem.sendAT("+CFSTERM");
+        modem.waitResponse();
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        SerialAT.write(caCert[i]);
+        if (i % 64 == 0) delay(4);
+    }
+    bool ok = modem.waitResponse(10000L) == 1;
+    if (ok) {
+        modem.sendAT("+CSSLCFG=\"convert\",2,\"ca.pem\"");
+        ok = modem.waitResponse() == 1;
+    }
+    modem.sendAT("+CFSTERM");
+    modem.waitResponse();
+    return ok;
+}
+
+void configureCertCheck() {
+    modem.sendAT("+CSSLCFG=\"ignorertctime\",0,1");
+    modem.waitResponse();
+}
+#endif
 
 void modemPowerToggle() {
     SerialMon.println("Power cycling modem via PWR_PIN...");
@@ -509,6 +549,18 @@ void setup() {
     String modemInfo = modem.getModemInfo();
     SerialMon.print("Modem Info: ");
     SerialMon.println(modemInfo);
+
+#if USE_TLS
+    if (caCert[0] != '\0') {
+        if (!loadCACert()) {
+            SerialMon.println("Failed to load CA certificate into modem");
+        }
+        configureCertCheck();
+        client.setCertificate("ca.pem");
+    } else {
+        SerialMon.println("TLS without server certificate check (caCert is empty)");
+    }
+#endif
 
     // Enable GPS antenna power
     SerialMon.println("Enabling GPS...");
