@@ -96,6 +96,7 @@ bool    sendHeartbeat();
 void    performUploadWindow();
 const char* getAuthMode(uint8_t encType);
 String  bssidToString(const uint8_t *bssid);
+void    appendJsonEscaped(String &out, const char *s);
 float   getBatteryVoltage();
 void    readDHT22(float &temperature, float &humidity);
 void    modemPowerToggle();
@@ -219,13 +220,13 @@ void processScanResults(int count) {
 
         if (isSeen(bssid)) continue;
 
-        addSeen(bssid);
-
         // If upload buffer is full, we can't store more — they'll be re-discovered later
         if (uploadBufferCount >= MAX_UPLOAD_BUFFER) {
             SerialMon.println("Upload buffer full, skipping remaining new networks");
             break;
         }
+
+        addSeen(bssid);
 
         WiFiNetwork *net = &uploadBuffer[uploadBufferCount];
         memcpy(net->bssid, bssid, 6);
@@ -267,12 +268,7 @@ bool uploadNetworks() {
         payload += "{\"mac\":\"";
         payload += bssidToString(net->bssid);
         payload += "\",\"ssid\":\"";
-        // Escape any quotes in SSID
-        for (int j = 0; net->ssid[j] != '\0'; j++) {
-            if (net->ssid[j] == '"') payload += "\\\"";
-            else if (net->ssid[j] == '\\') payload += "\\\\";
-            else payload += net->ssid[j];
-        }
+        appendJsonEscaped(payload, net->ssid);
         payload += "\",\"auth_mode\":\"";
         payload += getAuthMode(net->authMode);
         payload += "\",\"channel\":";
@@ -402,6 +398,43 @@ String bssidToString(const uint8_t *bssid) {
     snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
              bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
     return String(buf);
+}
+
+void appendJsonEscaped(String &out, const char *s) {
+    const uint8_t *p = (const uint8_t *)s;
+    char esc[7];
+    while (*p) {
+        uint8_t c = *p;
+        int len = 0;
+        uint8_t lo = 0x80, hi = 0xBF;
+        if (c < 0x80)                   len = 1;
+        else if (c >= 0xC2 && c <= 0xDF) len = 2;
+        else if (c >= 0xE0 && c <= 0xEF) len = 3;
+        else if (c >= 0xF0 && c <= 0xF4) len = 4;
+        if (c == 0xE0) lo = 0xA0;
+        else if (c == 0xED) hi = 0x9F;
+        else if (c == 0xF0) lo = 0x90;
+        else if (c == 0xF4) hi = 0x8F;
+
+        bool valid = len > 0;
+        for (int k = 1; valid && k < len; k++) {
+            uint8_t b = p[k];
+            valid = (k == 1) ? (b >= lo && b <= hi) : (b >= 0x80 && b <= 0xBF);
+        }
+
+        if (!valid || (len == 1 && c < 0x20)) {
+            snprintf(esc, sizeof(esc), "\\u%04x", c);
+            out += esc;
+            p++;
+        } else if (len == 1) {
+            if (c == '"' || c == '\\') out += '\\';
+            out += (char)c;
+            p++;
+        } else {
+            for (int k = 0; k < len; k++) out += (char)p[k];
+            p += len;
+        }
+    }
 }
 
 const char* getAuthMode(uint8_t encType) {
