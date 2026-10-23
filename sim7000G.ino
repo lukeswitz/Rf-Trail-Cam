@@ -510,7 +510,26 @@ void setup() {
     lastUploadTime = millis();
 
     // Enable hardware watchdog
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    esp_task_wdt_config_t wdtConfig = {
+        .timeout_ms     = WDT_TIMEOUT_S * 1000,
+        .idle_core_mask = 0,
+        .trigger_panic  = true,
+    };
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
+    wdtConfig.idle_core_mask |= (1 << 0);
+#endif
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1
+    wdtConfig.idle_core_mask |= (1 << 1);
+#endif
+#if CONFIG_ESP_TASK_WDT_INIT
+    esp_task_wdt_reconfigure(&wdtConfig);
+#else
+    esp_task_wdt_init(&wdtConfig);
+#endif
+#else
     esp_task_wdt_init(WDT_TIMEOUT_S, true);
+#endif
     esp_task_wdt_add(NULL);
 
     SerialMon.println("Setup complete. Scanning...");
