@@ -99,6 +99,32 @@ def receive_wigle_data():
     db.session.commit()
     return jsonify({"status": "success"}), 201
 
+@app.route('/api/wigle_data_batch', methods=['POST'])
+def receive_wigle_data_batch():
+    """Accept a JSON array of networks in one request."""
+    networks = request.json
+    if not isinstance(networks, list):
+        return jsonify({"status": "error", "message": "Expected JSON array"}), 400
+    first_seen = datetime.now(timezone.utc)
+    count = 0
+    for data in networks:
+        new_entry = WigleData(
+            mac=data.get('mac', 'Unknown'),
+            ssid=data.get('ssid', 'Unknown'),
+            auth_mode=data.get('auth_mode', 'Unknown'),
+            first_seen=first_seen,
+            channel=data.get('channel', 0),
+            rssi=data.get('rssi', 0),
+            latitude=data.get('latitude'),
+            longitude=data.get('longitude'),
+            altitude=data.get('altitude'),
+            accuracy=data.get('accuracy')
+        )
+        db.session.add(new_entry)
+        count += 1
+    db.session.commit()
+    return jsonify({"status": "success", "count": count}), 201
+
 @app.route('/api/heartbeat', methods=['POST'])
 def receive_heartbeat():
     data = request.json
