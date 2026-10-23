@@ -497,9 +497,11 @@
                         var bounds = [];
                         data.forEach(function(network) {
                             if (network.latitude && network.longitude) {
+                                var popup = document.createElement('b');
+                                popup.textContent = network.ssid;
                                 var marker = L.marker([network.latitude, network.longitude])
                                     .addTo(map)
-                                    .bindPopup(`<b>${network.ssid}</b>`);
+                                    .bindPopup(popup);
                                 bounds.push([network.latitude, network.longitude]);
                             }
                         });
