@@ -9,6 +9,7 @@ from io import StringIO
 import csv
 import requests
 import base64
+import hmac
 
 app = Flask(__name__)
 
@@ -147,8 +148,11 @@ def login():
         username = request.form['username']
         password = request.form['password']
         
-        # Replace these with actual credentials
-        if username == 'user' and password == 'password':
+        admin_username = os.environ.get('ADMIN_USERNAME', '')
+        admin_password = os.environ.get('ADMIN_PASSWORD', '')
+        if (admin_username and admin_password
+                and hmac.compare_digest(username.encode(), admin_username.encode())
+                and hmac.compare_digest(password.encode(), admin_password.encode())):
             session['logged_in'] = True
             return redirect(url_for('index'))
         else:
@@ -216,7 +220,7 @@ def upload_to_wigle():
         ])
     csv_data.seek(0)
     wigle_api_url = "https://api.wigle.net/api/v2/file/upload"
-    wigle_api_key = "CHANGETHIS_WIGGLE_API KEY"
+    wigle_api_key = os.environ.get('WIGLE_API_KEY', '')
     encoded_key = base64.b64encode(wigle_api_key.encode()).decode()
     headers = {"Authorization": f"Basic {encoded_key}"}
     files = {"file": ("wigle_data.csv", csv_data.getvalue(), "text/csv")}
