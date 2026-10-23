@@ -8,10 +8,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY templates/ templates/
 
-RUN mkdir -p instance
+RUN useradd --create-home --uid 10001 app \
+    && mkdir -p instance \
+    && chown app:app instance
 
-ENV FLASK_DEBUG=0
+USER app
 
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+CMD ["sh", "-c", "python -c 'from app import app, db; app.app_context().push(); db.create_all()' && exec gunicorn --bind 0.0.0.0:5000 --workers 1 --threads 4 app:app"]
