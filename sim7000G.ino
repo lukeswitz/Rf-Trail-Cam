@@ -424,7 +424,7 @@ void readDHT22(float &temperature, float &humidity) {
     temperature = dht.getTemperature();
     humidity = dht.getHumidity();
 
-    if (isnan(temperature) || isnan(humidity)) {
+    if (dht.getLastError() != DHT22::OK) {
         SerialMon.println("Failed to read from DHT22 sensor!");
         temperature = -1;
         humidity = -1;
