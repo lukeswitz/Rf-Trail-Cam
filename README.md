@@ -31,6 +31,7 @@ The server reads its credentials from environment variables.
 | `DEVICE_TOKEN` | A secret you choose that each device sends with its uploads. It must match `deviceToken` in the firmware. The server rejects all device uploads if it is not set. |
 | `WIGLE_API_KEY` | Your WiGLE API name and API token joined by a colon, as `name:token`. WiGLE shows the API token on your account page. The **Upload to WiGLE** button uses it. |
 | `FLASK_DEBUG` | Set it to `0` to turn off Flask debug mode when you run `python app.py`. If it is not set, `python app.py` runs in debug mode. The Docker image does not use it. |
+| `SESSION_COOKIE_SECURE` | Set it to `1` to send the login cookie only over HTTPS. The Docker image sets it to `1`, so open the site through its `https://` address to log in. |
 | `TUNNEL_TOKEN` | Your Cloudflare Tunnel token. Only the `tunnel` service in Docker Compose uses it. |
 
 Use a long random value for `ADMIN_PASSWORD` and `DEVICE_TOKEN`. One way to make one is `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.

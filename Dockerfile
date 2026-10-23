@@ -14,6 +14,8 @@ RUN useradd --create-home --uid 10001 app \
 
 USER app
 
+ENV SESSION_COOKIE_SECURE=1
+
 EXPOSE 5000
 
 CMD ["sh", "-c", "python -c 'from app import app, db; app.app_context().push(); db.create_all()' && exec gunicorn --bind 0.0.0.0:5000 --workers 1 --threads 4 app:app"]
