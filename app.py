@@ -22,6 +22,7 @@ db_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'instance', '
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.urandom(24)  # for session management
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
