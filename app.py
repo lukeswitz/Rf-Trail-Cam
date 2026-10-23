@@ -69,6 +69,8 @@ def device_auth_required(f):
 
 @app.route('/')
 def index():
+    if 'logged_in' not in session:
+        return render_template('index.html')
     page = request.args.get('page', 1, type=int)
     per_page = 20
     networks = WigleData.query.order_by(WigleData.first_seen.desc()).paginate(page=page, per_page=per_page)
@@ -196,6 +198,7 @@ def clear_database():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/network_data')
+@login_required
 def network_data():
     networks = db.session.query(WigleData.ssid, WigleData.latitude, WigleData.longitude, WigleData.mac)\
         .group_by(WigleData.mac)\
@@ -207,6 +210,7 @@ def network_data():
     } for network in networks if network.latitude and network.longitude])
 
 @app.route('/wigle_data')
+@login_required
 def wigle_data():
     data = WigleData.query.all()
     csv_data = StringIO()

@@ -325,7 +325,8 @@
             <div class="alert alert-danger">{{ message }}</div>
             {% endfor %}
         </div>
-        
+
+        {% if session.get('logged_in') %}
         <div class="grid">
             <div class="card">
                 <div class="card-header">
@@ -440,6 +441,13 @@
                 </div>
             </div>
         </div>
+        {% else %}
+        <div class="card">
+            <div class="card-body">
+                Log in to view the collected data.
+            </div>
+        </div>
+        {% endif %}
     </div>
     
     <!-- Login Modal -->
@@ -482,6 +490,7 @@
     
     <script>
         document.addEventListener('DOMContentLoaded', function() {
+            {% if session.get('logged_in') %}
             // Initialize map
             var map = L.map('map').setView([0, 0], 2);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -512,7 +521,8 @@
                     }
                 })
                 .catch(error => console.error('Error fetching network data:', error));
-            
+            {% endif %}
+
             // Convert UTC times to local time
             document.querySelectorAll('.utc-time').forEach(function(element) {
                 const utcTime = element.textContent;
@@ -570,7 +580,10 @@
                     .then(data => {
                         const messageContainer = document.getElementById('message-container');
                         const alertClass = data.status === 'success' ? 'alert-success' : 'alert-danger';
-                        messageContainer.innerHTML = `<div class="alert ${alertClass}">${data.message}</div>`;
+                        const alertBox = document.createElement('div');
+                        alertBox.className = `alert ${alertClass}`;
+                        alertBox.textContent = data.message;
+                        messageContainer.replaceChildren(alertBox);
                         
                         // Hide the message after 5 seconds
                         setTimeout(() => {
