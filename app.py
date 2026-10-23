@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, Response
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session, Response, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from datetime import datetime, timezone
@@ -152,8 +152,8 @@ def login():
             session['logged_in'] = True
             return redirect(url_for('index'))
         else:
-            return render_template('login.html', error='Invalid credentials')
-    return render_template('login.html')
+            flash('Invalid credentials')
+    return redirect(url_for('index'))
 
 
 @app.route('/logout')

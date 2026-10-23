@@ -320,7 +320,11 @@
     </header>
 
     <div class="container" style="margin-top: 2rem;">
-        <div id="message-container"></div>
+        <div id="message-container">
+            {% for message in get_flashed_messages() %}
+            <div class="alert alert-danger">{{ message }}</div>
+            {% endfor %}
+        </div>
         
         <div class="grid">
             <div class="card">
