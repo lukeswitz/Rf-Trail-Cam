@@ -32,7 +32,10 @@ The server reads its credentials from environment variables.
 | `WIGLE_API_KEY` | Your WiGLE API name and API token joined by a colon, as `name:token`. WiGLE shows the API token on your account page. The **Upload to WiGLE** button uses it. |
 | `FLASK_DEBUG` | Set it to `0` to turn off Flask debug mode when you run `python app.py`. If it is not set, `python app.py` runs in debug mode. The Docker image does not use it. |
 | `SESSION_COOKIE_SECURE` | Set it to `1` to send the login cookie only over HTTPS. The Docker image sets it to `1`, so open the site through its `https://` address to log in. |
+| `TRUST_CF_CONNECTING_IP` | Set it to `1` only when every request reaches the server through Cloudflare. The login limit then counts failures per visitor IP from Cloudflare's `CF-Connecting-IP` header instead of the address of the Cloudflare tunnel. The Docker image sets it to `1`. |
 | `TUNNEL_TOKEN` | Your Cloudflare Tunnel token. Only the `tunnel` service in Docker Compose uses it. |
+
+After 5 failed logins from one IP address within 15 minutes, the server refuses further logins from that address until 15 minutes have passed since the oldest of those failures. The count is kept in memory and resets when the server restarts.
 
 Use a long random value for `ADMIN_PASSWORD` and `DEVICE_TOKEN`. One way to make one is `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
 

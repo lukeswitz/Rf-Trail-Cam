@@ -10,6 +10,8 @@ import csv
 import requests
 import base64
 import hmac
+import threading
+import time
 
 app = Flask(__name__)
 
@@ -27,6 +29,11 @@ app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE') ==
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
+
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW_S = 15 * 60
+login_failures = {}
+login_failures_lock = threading.Lock()
 
 class WigleData(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -164,20 +171,40 @@ def receive_heartbeat():
     db.session.commit()
     return jsonify({"status": "success", "timestamp": timestamp.isoformat()}), 201
 
+def client_ip():
+    if os.environ.get('TRUST_CF_CONNECTING_IP') == '1':
+        return request.headers.get('CF-Connecting-IP', request.remote_addr)
+    return request.remote_addr
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
+        ip = client_ip()
+        now = time.monotonic()
+        with login_failures_lock:
+            for key in [k for k, times in login_failures.items() if now - times[-1] > LOGIN_WINDOW_S]:
+                del login_failures[key]
+            if sum(1 for t in login_failures.get(ip, []) if now - t <= LOGIN_WINDOW_S) >= LOGIN_MAX_FAILURES:
+                flash('Too many failed logins. Try again later.')
+                return redirect(url_for('index'))
+
         username = request.form['username']
         password = request.form['password']
-        
+
         admin_username = os.environ.get('ADMIN_USERNAME', '')
         admin_password = os.environ.get('ADMIN_PASSWORD', '')
-        if (admin_username and admin_password
-                and hmac.compare_digest(username.encode(), admin_username.encode())
-                and hmac.compare_digest(password.encode(), admin_password.encode())):
+        username_ok = hmac.compare_digest(username.encode(), admin_username.encode())
+        password_ok = hmac.compare_digest(password.encode(), admin_password.encode())
+        if admin_username and admin_password and username_ok and password_ok:
+            with login_failures_lock:
+                login_failures.pop(ip, None)
             session['logged_in'] = True
             return redirect(url_for('index'))
         else:
+            with login_failures_lock:
+                times = [t for t in login_failures.get(ip, []) if now - t <= LOGIN_WINDOW_S]
+                times.append(now)
+                login_failures[ip] = times
             flash('Invalid credentials')
     return redirect(url_for('index'))
 
