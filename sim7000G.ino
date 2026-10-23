@@ -30,6 +30,7 @@ const char gprsUser[] = "";
 const char gprsPass[] = "";
 const char server[]   = "x.x.x.x";
 const int  port       = 5000;
+const char deviceToken[] = "";  // Must match DEVICE_TOKEN on the server
 
 // Timing
 const unsigned long UPLOAD_INTERVAL_MS   = 5UL * 60 * 1000;  // 5 minutes
@@ -296,6 +297,7 @@ bool uploadNetworks() {
     http.beginRequest();
     http.post("/api/wigle_data_batch");
     http.sendHeader("Content-Type", "application/json");
+    http.sendHeader("Authorization", String("Bearer ") + deviceToken);
     http.sendHeader("Content-Length", payload.length());
     http.beginBody();
     http.print(payload);
@@ -336,6 +338,7 @@ bool sendHeartbeat() {
     http.beginRequest();
     http.post("/api/heartbeat");
     http.sendHeader("Content-Type", "application/json");
+    http.sendHeader("Authorization", String("Bearer ") + deviceToken);
     http.sendHeader("Content-Length", payload.length());
     http.beginBody();
     http.print(payload);

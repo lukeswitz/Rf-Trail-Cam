@@ -23,6 +23,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.urandom(24)  # for session management
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
@@ -56,6 +57,16 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def device_auth_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        device_token = os.environ.get('DEVICE_TOKEN', '')
+        auth = request.headers.get('Authorization', '')
+        if not device_token or not hmac.compare_digest(auth.encode(), f'Bearer {device_token}'.encode()):
+            return jsonify({"status": "error", "message": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
 @app.route('/')
 def index():
     page = request.args.get('page', 1, type=int)
@@ -80,8 +91,11 @@ def index():
                            unique_entries=unique_entries, total_entries=total_entries)
 
 @app.route('/api/wigle_data', methods=['POST'])
+@device_auth_required
 def receive_wigle_data():
     data = request.json
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "Expected JSON object"}), 400
     print(f"Received data: {data}")
     first_seen = datetime.now(timezone.utc)
     
@@ -102,10 +116,11 @@ def receive_wigle_data():
     return jsonify({"status": "success"}), 201
 
 @app.route('/api/wigle_data_batch', methods=['POST'])
+@device_auth_required
 def receive_wigle_data_batch():
     """Accept a JSON array of networks in one request."""
     networks = request.json
-    if not isinstance(networks, list):
+    if not isinstance(networks, list) or not all(isinstance(n, dict) for n in networks):
         return jsonify({"status": "error", "message": "Expected JSON array"}), 400
     first_seen = datetime.now(timezone.utc)
     count = 0
@@ -128,8 +143,11 @@ def receive_wigle_data_batch():
     return jsonify({"status": "success", "count": count}), 201
 
 @app.route('/api/heartbeat', methods=['POST'])
+@device_auth_required
 def receive_heartbeat():
     data = request.json
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "Expected JSON object"}), 400
     timestamp = datetime.now(timezone.utc)
     
     new_heartbeat = Heartbeat(
