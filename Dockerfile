@@ -10,6 +10,8 @@ COPY templates/ templates/
 
 RUN mkdir -p instance
 
+ENV FLASK_DEBUG=0
+
 EXPOSE 5000
 
 CMD ["python", "app.py"]
