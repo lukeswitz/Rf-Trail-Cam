@@ -148,8 +148,8 @@ def receive_wigle_data_batch():
 @device_auth_required
 def receive_heartbeat():
     data = request.json
-    if not isinstance(data, dict):
-        return jsonify({"status": "error", "message": "Expected JSON object"}), 400
+    if not isinstance(data, dict) or data.get('mac') is None or data.get('battery') is None:
+        return jsonify({"status": "error", "message": "Expected JSON object with mac and battery"}), 400
     timestamp = datetime.now(timezone.utc)
     
     new_heartbeat = Heartbeat(
